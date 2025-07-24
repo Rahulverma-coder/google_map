@@ -1,0 +1,842 @@
+import 'package:flutter/material.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+
+class AddPropertyScreen extends StatefulWidget {
+  const AddPropertyScreen({Key? key}) : super(key: key);
+
+  @override
+  _AddPropertyScreenState createState() => _AddPropertyScreenState();
+}
+
+class _AddPropertyScreenState extends State<AddPropertyScreen> {
+  // Form fields
+  String propertyName = '';
+  String location = '';
+  String state = '';
+  String district = '';
+  String pincode = '';
+  String propertyType = '';
+  
+  // Map related state
+  late GoogleMapController mapController;
+  final String googleMapsApiKey = 'YOUR_GOOGLE_MAPS_API_KEY'; // Replace with your key
+  LatLng _initialPosition = const LatLng(30.7046, 76.7179);
+  LatLng? _propertyPosition;
+  Marker? _propertyMarker;
+  Marker? _selectedPlaceMarker;
+  PlaceInfo? _selectedPlaceInfo;
+  
+  // UI state
+  bool _isLoading = false;
+  bool _isReverseGeocoding = false;
+  bool _showPropertyMarker = false;
+  
+  // Form validation
+  bool get isAddressComplete => 
+      propertyName.isNotEmpty && 
+      location.isNotEmpty && 
+      district.isNotEmpty && 
+      state.isNotEmpty && 
+      pincode.length == 6 && 
+      propertyType.isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    // You would get these from your state management (equivalent to Redux in RN)
+    // state = selected?.statename ?? '';
+    // district = selected?.district ?? '';
+    // pincode = selected?.pincode ?? '';
+  }
+
+  Future<void> fetchCoordinates(String address) async {
+    if (!isAddressComplete) {
+      setState(() {
+        _showPropertyMarker = false;
+        _propertyPosition = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      final response = await http.get(
+        Uri.parse(
+          'https://maps.googleapis.com/maps/api/geocode/json?address=$address&key=$googleMapsApiKey'
+        ),
+      );
+
+      final data = json.decode(response.body);
+      final locationData = data['results'][0]?['geometry']?['location'];
+      
+      if (locationData != null) {
+        final lat = locationData['lat'];
+        final lng = locationData['lng'];
+        final newPosition = LatLng(lat, lng);
+        
+        setState(() {
+          _propertyPosition = newPosition;
+          _showPropertyMarker = true;
+          _initialPosition = newPosition;
+          _propertyMarker = Marker(
+            markerId: const MarkerId('property-marker'),
+            position: newPosition,
+            infoWindow: InfoWindow(
+              title: propertyName.isNotEmpty ? propertyName : 'Property Location',
+              snippet: _fullAddress,
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          );
+        });
+        
+        // Move camera to new position
+        mapController.animateCamera(
+          CameraUpdate.newLatLngZoom(newPosition, 15),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Location not found. Please check your address details.')),
+        );
+        setState(() {
+          _showPropertyMarker = false;
+          _propertyPosition = null;
+        });
+      }
+    } catch (error) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to get location coordinates: $error')),
+      );
+      setState(() {
+        _showPropertyMarker = false;
+        _propertyPosition = null;
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  String get _fullAddress => '$location, $district, $state, $pincode';
+
+  String _getPropertyType(List<dynamic> types) {
+    const typeMapping = {
+      'school': 'Educational',
+      'university': 'Educational',
+      'hospital': 'Healthcare',
+      'pharmacy': 'Healthcare',
+      'restaurant': 'Commercial',
+      'store': 'Commercial',
+      'shopping_mall': 'Commercial',
+      'bank': 'Commercial',
+      'gas_station': 'Commercial',
+      'lodging': 'Hospitality',
+      'tourist_attraction': 'Tourism',
+      'park': 'Recreational',
+      'gym': 'Recreational',
+      'movie_theater': 'Entertainment',
+      'church': 'Religious',
+      'mosque': 'Religious',
+      'temple': 'Religious',
+      'cemetery': 'Memorial',
+      'fire_station': 'Public Service',
+      'police': 'Public Service',
+      'post_office': 'Public Service',
+      'library': 'Public Service',
+      'courthouse': 'Government',
+      'city_hall': 'Government',
+      'airport': 'Transportation',
+      'subway_station': 'Transportation',
+      'bus_station': 'Transportation',
+    };
+
+    for (final type in types) {
+      if (typeMapping.containsKey(type)) {
+        return typeMapping[type]!;
+      }
+    }
+    return 'Mixed Use';
+  }
+
+  Map<String, String> _extractLocationDetails(Map<String, dynamic> placeData) {
+    final addressComponents = placeData['address_components'] as List<dynamic>? ?? [];
+    String extractedLocation = '';
+    String extractedDistrict = '';
+    String extractedState = '';
+    String extractedPincode = '';
+
+    for (final component in addressComponents) {
+      final types = component['types'] as List<dynamic>? ?? [];
+      
+      if (types.contains('sublocality') || types.contains('neighborhood')) {
+        extractedLocation = component['long_name'] as String? ?? '';
+      } else if (types.contains('locality') || types.contains('administrative_area_level_2')) {
+        extractedDistrict = component['long_name'] as String? ?? '';
+      } else if (types.contains('administrative_area_level_1')) {
+        extractedState = component['long_name'] as String? ?? '';
+      } else if (types.contains('postal_code')) {
+        extractedPincode = component['long_name'] as String? ?? '';
+      }
+    }
+
+    // If no sublocality found, try to extract from formatted address
+    if (extractedLocation.isEmpty) {
+      final formattedAddress = placeData['formatted_address'] as String? ?? '';
+      final addressParts = formattedAddress.split(',');
+      extractedLocation = addressParts.isNotEmpty ? addressParts[0].trim() : '';
+    }
+
+    return {
+      'location': extractedLocation,
+      'district': extractedDistrict,
+      'state': extractedState,
+      'pincode': extractedPincode,
+    };
+  }
+
+  Future<void> _handleMapTap(LatLng position) async {
+    setState(() {
+      _isReverseGeocoding = true;
+    });
+
+    try {
+      final response = await http.get(
+        Uri.parse(
+          'https://maps.googleapis.com/maps/api/geocode/json?latlng=${position.latitude},${position.longitude}&key=$googleMapsApiKey'
+        ),
+      );
+
+      final data = json.decode(response.body);
+      final place = data['results'][0];
+      
+      if (place != null) {
+        final placeInfo = PlaceInfo(
+          coordinate: position,
+          name: place['formatted_address'] as String? ?? '',
+          types: (place['types'] as List<dynamic>? ?? []).cast<String>(),
+          fullData: place,
+        );
+        
+        setState(() {
+          _selectedPlaceInfo = placeInfo;
+          _selectedPlaceMarker = Marker(
+            markerId: const MarkerId('selected-place-marker'),
+            position: position,
+            infoWindow: InfoWindow(
+              title: '📍 Place Information',
+              snippet: placeInfo.name,
+            ),
+            icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+          );
+        });
+
+        // Extract address details
+        final addressDetails = _extractLocationDetails(place);
+        final suggestedPropertyType = _getPropertyType(placeInfo.types);
+        
+        // Show confirmation dialog before auto-filling
+        _showAutoFillDialog(addressDetails, suggestedPropertyType, placeInfo);
+      }
+    } catch (error) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to get place details: $error')),
+      );
+    } finally {
+      setState(() {
+        _isReverseGeocoding = false;
+      });
+    }
+  }
+
+  void _showAutoFillDialog(
+    Map<String, String> addressDetails, 
+    String suggestedPropertyType,
+    PlaceInfo placeInfo,
+  ) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Auto-fill Address'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Would you like to fill the form with this location?'),
+            const SizedBox(height: 8),
+            Text('📍 ${placeInfo.name}'),
+            const SizedBox(height: 4),
+            Text('🏷️ Type: $suggestedPropertyType'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _autoFillFields(addressDetails, suggestedPropertyType, placeInfo);
+            },
+            child: const Text('Auto-fill'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _autoFillFields(
+    Map<String, String> addressDetails, 
+    String suggestedPropertyType,
+    PlaceInfo placeInfo,
+  ) {
+    // Extract property name from place name
+    final placeName = placeInfo.name.split(',').first.trim();
+    
+    setState(() {
+      if (propertyName.isEmpty) propertyName = placeName;
+      if (location.isEmpty && addressDetails['location']!.isNotEmpty) {
+        location = addressDetails['location']!;
+      }
+      if (district.isEmpty && addressDetails['district']!.isNotEmpty) {
+        district = addressDetails['district']!;
+      }
+      if (state.isEmpty && addressDetails['state']!.isNotEmpty) {
+        state = addressDetails['state']!;
+      }
+      if (pincode.isEmpty && addressDetails['pincode']!.isNotEmpty) {
+        pincode = addressDetails['pincode']!;
+      }
+      if (propertyType.isEmpty) propertyType = suggestedPropertyType;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Form auto-filled! Please review and adjust the details if needed.')),
+    );
+  }
+
+  void _resetPropertyLocation() {
+    if (isAddressComplete) {
+      fetchCoordinates(_fullAddress);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please fill all address fields first.')),
+      );
+    }
+  }
+
+  void _clearAllFields() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear All Fields'),
+        content: const Text('Are you sure you want to clear all entered data?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              setState(() {
+                propertyName = '';
+                location = '';
+                propertyType = '';
+                // Don't clear district, state, pincode if they came from state management
+                // if (!selected?.district) district = '';
+                // if (!selected?.statename) state = '';
+                // if (!selected?.pincode) pincode = '';
+                _selectedPlaceInfo = null;
+                _selectedPlaceMarker = null;
+              });
+            },
+            child: const Text(
+              'Clear',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _handleAddProperty() {
+    if (!isAddressComplete) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please fill all required fields')),
+      );
+      return;
+    }
+
+    if (!_showPropertyMarker || _propertyPosition == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Property location not found. Please check your address.')),
+      );
+      return;
+    }
+
+    final propertyData = {
+      'propertyName': propertyName,
+      'location': location,
+      'state': state,
+      'district': district,
+      'pincode': pincode,
+      'propertyType': propertyType,
+      'coordinates': {
+        'latitude': _propertyPosition!.latitude,
+        'longitude': _propertyPosition!.longitude,
+      },
+      'address': _fullAddress,
+    };
+
+    print('Property data: $propertyData');
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Success'),
+        content: const Text('Property added successfully!'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.pop(context);
+            },
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text(
+                    'Add Property',
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _clearAllFields,
+                    style: TextButton.styleFrom(
+                      backgroundColor: Colors.red[400],
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(15),
+                      ),
+                    ),
+                    child: const Text(
+                      'Clear All',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // Address Card
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF3EC),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border(
+                    left: BorderSide(
+                      color: const Color(0xFFFF6B35),
+                      width: 4,
+                    ),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '${location.isNotEmpty ? location : 'Location'}, '
+                      '${district.isNotEmpty ? district : 'District'}, '
+                      '${state.isNotEmpty ? state : 'State'}',
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.grey,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${state.isNotEmpty ? state : 'State'} - ${pincode.isNotEmpty ? pincode : 'Pincode'}',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    
+                    if (_isLoading)
+                      const Text(
+                        '🔍 Finding location...',
+                        style: TextStyle(
+                          color: Colors.blue,
+                          fontStyle: FontStyle.italic,
+                          fontSize: 12,
+                        ),
+                      ),
+                    
+                    if (_isReverseGeocoding)
+                      const Text(
+                        '📍 Getting place details...',
+                        style: TextStyle(
+                          color: Colors.blue,
+                          fontStyle: FontStyle.italic,
+                          fontSize: 12,
+                        ),
+                      ),
+                    
+                    if (_showPropertyMarker && _propertyPosition != null)
+                      const Text(
+                        '✅ Property location confirmed',
+                        style: TextStyle(
+                          color: Colors.green,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      ),
+                    
+                    if (!isAddressComplete)
+                      const Text(
+                        '⚠️ Fill all fields to show property location',
+                        style: TextStyle(
+                          color: Colors.orange,
+                          fontWeight: FontWeight.w500,
+                          fontSize: 12,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 20),
+
+              // Form Fields
+              TextField(
+                decoration: InputDecoration(
+                  labelText: 'Enter Property Name *',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: propertyName.isEmpty ? const Color(0xFFFFF5F5) : const Color(0xFFFAFAFA),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(
+                      color: propertyName.isEmpty ? Colors.red : const Color(0xFFDDDDDD),
+                    ),
+                  ),
+                ),
+                onChanged: (value) => setState(() => propertyName = value),
+              ),
+              const SizedBox(height: 12),
+
+              TextField(
+                decoration: InputDecoration(
+                  labelText: 'Location/Area *',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: location.isEmpty ? const Color(0xFFFFF5F5) : const Color(0xFFFAFAFA),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(
+                      color: location.isEmpty ? Colors.red : const Color(0xFFDDDDDD),
+                    ),
+                  ),
+                ),
+                onChanged: (value) => setState(() => location = value),
+              ),
+              const SizedBox(height: 12),
+
+              TextField(
+                decoration: InputDecoration(
+                  labelText: 'City/District *',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: district.isEmpty ? const Color(0xFFFFF5F5) : const Color(0xFFFAFAFA),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(
+                      color: district.isEmpty ? Colors.red : const Color(0xFFDDDDDD),
+                    ),
+                  ),
+                onChanged: (value) => setState(() => district = value),
+              ),
+              const SizedBox(height: 12),
+
+              TextField(
+                decoration: InputDecoration(
+                  labelText: 'State *',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: state.isEmpty ? const Color(0xFFFFF5F5) : const Color(0xFFFAFAFA),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(
+                      color: state.isEmpty ? Colors.red : const Color(0xFFDDDDDD),
+                    ),
+                  ),
+                onChanged: (value) => setState(() => state = value),
+              ),
+              const SizedBox(height: 12),
+
+              TextField(
+                decoration: InputDecoration(
+                  labelText: 'Pincode *',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: pincode.length != 6 ? const Color(0xFFFFF5F5) : const Color(0xFFFAFAFA),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(
+                      color: pincode.length != 6 ? Colors.red : const Color(0xFFDDDDDD),
+                    ),
+                  ),
+                ),
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                onChanged: (value) => setState(() => pincode = value),
+              ),
+              const SizedBox(height: 12),
+
+              TextField(
+                decoration: InputDecoration(
+                  labelText: 'Property Type *',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  filled: true,
+                  fillColor: propertyType.isEmpty ? const Color(0xFFFFF5F5) : const Color(0xFFFAFAFA),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(
+                      color: propertyType.isEmpty ? Colors.red : const Color(0xFFDDDDDD),
+                    ),
+                  ),
+                onChanged: (value) => setState(() => propertyType = value),
+              ),
+              const SizedBox(height: 16),
+
+              // Map Instructions
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE3F2FD),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  children: const [
+                    Text(
+                      '🏠 Property marker appears when all fields are filled correctly',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF1976D2),
+                        fontWeight: FontWeight.w600,
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    Text(
+                      '📍 Tap anywhere on map to auto-fill form with place details',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF1976D2),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Map
+              SizedBox(
+                height: 300,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: GoogleMap(
+                    initialCameraPosition: CameraPosition(
+                      target: _initialPosition,
+                      zoom: 15,
+                    ),
+                    onMapCreated: (controller) => mapController = controller,
+                    onTap: _handleMapTap,
+                    markers: {
+                      if (_propertyMarker != null) _propertyMarker!,
+                      if (_selectedPlaceMarker != null) _selectedPlaceMarker!,
+                    }.toSet(),
+                    myLocationEnabled: true,
+                    myLocationButtonEnabled: false,
+                    zoomControlsEnabled: true,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+
+              // Map Controls
+              Center(
+                child: ElevatedButton(
+                  onPressed: 
+                    !isAddressComplete || _isLoading ? null : _resetPropertyLocation,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF007AFF),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  ),
+                  child: const Text(
+                    '📍 Refresh Property Location',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Coordinates Display
+              if (_showPropertyMarker && _propertyPosition != null)
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE8F5E8),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: const Color(0xFF28A745),
+                    ),
+                  ),
+                  child: Column(
+                    children: [
+                      const Text(
+                        '🏠 Property Location',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Color(0xFF155724),
+                          fontWeight: FontWeight.bold,
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Lat: ${_propertyPosition!.latitude.toStringAsFixed(6)} | '
+                        'Lng: ${_propertyPosition!.longitude.toStringAsFixed(6)}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFF155724),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      const Text(
+                        'Fixed location based on address',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: Colors.grey,
+                          textAlign: TextAlign.center,
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 20),
+
+              // Footer Buttons
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        side: const BorderSide(color: Color(0xFFDDDDDD)),
+                      ),
+                      child: const Text(
+                        '← Back',
+                        style: TextStyle(
+                          color: Colors.black87,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: 
+                        !_showPropertyMarker || _isLoading ? null : _handleAddProperty,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF28A745),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text(
+                        'Add Property',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class PlaceInfo {
+  final LatLng coordinate;
+  final String name;
+  final List<String> types;
+  final Map<String, dynamic> fullData;
+
+  PlaceInfo({
+    required this.coordinate,
+    required this.name,
+    required this.types,
+    required this.fullData,
+  });
+}
